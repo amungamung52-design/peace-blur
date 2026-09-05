@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+<title>Peace Blur • Hand Tracking</title>
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;background:#05070b;color:#fff;font-family:Arial,sans-serif;overflow:hidden}
+body{display:flex;align-items:center;justify-content:center}
+.app{position:relative;width:100%;height:100%;max-width:900px;background:#080b11;overflow:hidden}
+video{position:absolute;width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+#blurLayer{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1);filter:blur(24px);opacity:0;transition:opacity .25s ease}
+#canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.vignette{position:absolute;inset:0;background:radial-gradient(circle at center,transparent 30%,rgba(0,0,0,.62) 100%);pointer-events:none}
+.top{position:absolute;top:0;left:0;right:0;padding:18px 18px 12px;display:flex;justify-content:space-between;align-items:center;z-index:5}
+.badge{padding:8px 12px;border:1px solid rgba(255,255,255,.15);border-radius:999px;background:rgba(10,12,18,.55);backdrop-filter:blur(12px);font-size:12px}
+.status{padding:8px 13px;border-radius:999px;background:rgba(255,255,255,.09);font-size:12px}
+.center{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);text-align:center;z-index:4;pointer-events:none;opacity:1;transition:.25s}
+.center.hidden{opacity:0;transform:translate(-50%,-45%)}
+.icon{font-size:56px}
+.title{font-size:28px;font-weight:800;margin-top:6px}
+.sub{font-size:13px;opacity:.65;margin-top:7px}
+.bottom{position:absolute;left:18px;right:18px;bottom:18px;z-index:5;display:flex;gap:10px;align-items:center}
+button{border:0;border-radius:14px;padding:13px 16px;background:#fff;color:#05070b;font-weight:800}
+.help{font-size:12px;opacity:.65;padding:0 5px}
+#error{position:absolute;left:18px;right:18px;bottom:80px;z-index:10;padding:14px;border-radius:14px;background:rgba(130,20,20,.9);display:none;font-size:13px;line-height:1.4}
+</style>
+</head>
+<body>
+<div class="app">
+  <video id="video" autoplay playsinline muted></video>
+  <video id="blurLayer" autoplay playsinline muted></video>
+  <canvas id="canvas"></canvas>
+  <div class="vignette"></div>
+
+  <div class="top">
+    <div class="badge">✋ HAND TRACKING</div>
+    <div class="status" id="status">Memuat AI…</div>
+  </div>
+
+  <div class="center" id="center">
+    <div class="icon">✌️</div>
+    <div class="title">Peace Blur</div>
+    <div class="sub">Angkat telunjuk + jari tengah</div>
+  </div>
+
+  <div id="error"></div>
+
+  <div class="bottom">
+    <button id="start">AKTIFKAN KAMERA</button>
+    <div class="help">Buat gesture ✌️ untuk mengaktifkan blur.</div>
+  </div>
+</div>
+
+<script type="module">
+import { HandLandmarker, FilesetResolver } from
+  "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/+esm";
+
+const video = document.getElementById("video");
+const blurLayer = document.getElementById("blurLayer");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+const statusEl = document.getElementById("status");
+const center = document.getElementById("center");
+const errorBox = document.getElementById("error");
+const startBtn = document.getElementById("start");
+
+let handLandmarker;
+let stream;
+let lastVideoTime = -1;
+
+function showError(msg){
+  errorBox.textContent = msg;
+  errorBox.style.display = "block";
+}
+
+async function loadAI(){
+  try{
+    const vision = await FilesetResolver.forVisionTasks(
+      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm"
+    );
+
+    handLandmarker = await HandLandmarker.createFromOptions(vision,{
+      baseOptions:{
+        modelAssetPath:
+          "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+        delegate:"GPU"
+      },
+      runningMode:"VIDEO",
+      numHands:1,
+      minHandDetectionConfidence:.5,
+      minHandPresenceConfidence:.5,
+      minTrackingConfidence:.5
+    });
+
+    statusEl.textContent = "AI SIAP";
+    startBtn.disabled = false;
+  }catch(e){
+    console.error(e);
+    statusEl.textContent = "AI GAGAL";
+    showError("Model AI gagal dimuat. Pastikan internet aktif lalu refresh halaman. Detail: "+e.message);
+  }
+}
+
+function fingerUp(lm, tip, pip){
+  return lm[tip].y < lm[pip].y;
+}
+
+function isPeace(lm){
+  const index = fingerUp(lm,8,6);
+  const middle = fingerUp(lm,12,10);
+  const ring = fingerUp(lm,16,14);
+  const pinky = fingerUp(lm,20,18);
+  return index && middle && !ring && !pinky;
+}
+
+function drawLandmarks(lm, peace){
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0,0,w,h);
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = peace ? "rgba(255,255,255,.95)" : "rgba(80,220,255,.8)";
+  ctx.fillStyle = peace ? "#fff" : "#54dcff";
+
+  const pairs = [
+    [0,1],[1,2],[2,3],[3,4],
+    [0,5],[5,6],[6,7],[7,8],
+    [5,9],[9,10],[10,11],[11,12],
+    [9,13],[13,14],[14,15],[15,16],
+    [13,17],[17,18],[18,19],[19,20],[0,17]
+  ];
+
+  for(const [a,b] of pairs){
+    const x1 = w - lm[a].x*w, y1 = lm[a].y*h;
+    const x2 = w - lm[b].x*w, y2 = lm[b].y*h;
+    ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+  }
+
+  for(const p of lm){
+    const x = w-p.x*w, y=p.y*h;
+    ctx.beginPath(); ctx.arc(x,y,4,0,Math.PI*2); ctx.fill();
+  }
+}
+
+async function startCamera(){
+  try{
+    errorBox.style.display="none";
+    stream = await navigator.mediaDevices.getUserMedia({
+      video:{facingMode:"user",width:{ideal:1280},height:{ideal:720}},
+      audio:false
+    });
+    video.srcObject = stream;
+    blurLayer.srcObject = stream;
+    await video.play();
+    await blurLayer.play();
+    startBtn.style.display="none";
+    center.classList.add("hidden");
+    statusEl.textContent="KAMERA AKTIF";
+    requestAnimationFrame(loop);
+  }catch(e){
+    console.error(e);
+    showError("Kamera tidak bisa dibuka. Izinkan akses kamera untuk Chrome/browser ini, lalu tekan refresh. ("+e.message+")");
+  }
+}
+
+async function loop(){
+  if(video.readyState >= 2 && handLandmarker){
+    if(video.currentTime !== lastVideoTime){
+      lastVideoTime = video.currentTime;
+      const result = handLandmarker.detectForVideo(video, performance.now());
+
+      let peace = false;
+      if(result.landmarks && result.landmarks.length){
+        peace = isPeace(result.landmarks[0]);
+        drawLandmarks(result.landmarks[0],peace);
+      }else{
+        ctx.clearRect(0,0,canvas.width,canvas.height);
+      }
+
+      blurLayer.style.opacity = peace ? "1" : "0";
+      statusEl.textContent = peace ? "✌️ PEACE — BLUR ON" : "KAMERA AKTIF";
+      statusEl.style.background = peace ? "rgba(255,255,255,.18)" : "rgba(255,255,255,.09)";
+    }
+  }
+  requestAnimationFrame(loop);
+}
+
+function resize(){
+  canvas.width = innerWidth;
+  canvas.height = innerHeight;
+}
+addEventListener("resize",resize);
+resize();
+
+startBtn.disabled = true;
+loadAI();
+startBtn.addEventListener("click",startCamera);
+</script>
+</body>
+</html>
